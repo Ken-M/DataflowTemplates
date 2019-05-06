@@ -41,6 +41,7 @@ import org.apache.beam.sdk.io.gcp.bigquery.BigQueryIO.Write.WriteDisposition;
 import org.apache.beam.sdk.io.gcp.bigquery.BigQueryInsertError;
 import org.apache.beam.sdk.io.gcp.bigquery.InsertRetryPolicy;
 import org.apache.beam.sdk.io.gcp.bigquery.WriteResult;
+import org.apache.beam.sdk.io.gcp.bigquery.TableDestination;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubIO;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubMessage;
 import org.apache.beam.sdk.io.gcp.pubsub.PubsubMessageWithAttributesCoder;
@@ -59,6 +60,7 @@ import org.apache.beam.sdk.values.PCollection;
 import org.apache.beam.sdk.values.PCollectionList;
 import org.apache.beam.sdk.values.PCollectionTuple;
 import org.apache.beam.sdk.values.TupleTag;
+import org.apache.beam.sdk.values.ValueInSingleWindow;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -207,6 +209,23 @@ public class PubSubToBigQuery {
     run(options);
   }
 
+
+  static class MyDestinationsFunction
+      implements SerializableFunction<ValueInSingleWindow<TableRow>, TableDestination> {
+    private final String tablePrefix;
+
+    MyDestinationsFunction(ValueProvider<String> tableId) {
+      tablePrefix = tableId + ".TBL_";
+    }
+
+    @Override
+    public TableDestination apply(ValueInSingleWindow<TableRow> input) {
+      String destination = input.getValue().get("TYPE").toString();
+      return new TableDestination(tablePrefix + destination, "Data type " + destination);
+    }
+  }
+
+
   /**
    * Runs the pipeline to completion with the specified options. This method does not wait until the
    * pipeline is finished before returning. Invoke {@code result.waitUntilFinish()} on the result
@@ -274,7 +293,7 @@ public class PubSubToBigQuery {
                     .withExtendedErrorInfo()
                     .withMethod(BigQueryIO.Write.Method.STREAMING_INSERTS)
                     .withFailedInsertRetryPolicy(InsertRetryPolicy.retryTransientErrors())
-                    .to(options.getOutputTableSpec()));
+                    .to(new MyDestinationsFunction(options.getOutputTableSpec())) );
 
     /*
      * Step 3 Contd.
