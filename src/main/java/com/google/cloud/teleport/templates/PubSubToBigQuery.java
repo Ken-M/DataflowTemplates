@@ -147,7 +147,7 @@ public class PubSubToBigQuery {
       new TupleTag<FailsafeElement<PubsubMessage, String>>() {};
 
   /** The default suffix for error tables if dead letter table is not specified. */
-  public static final String DEFAULT_DEADLETTER_TABLE_SUFFIX = "_error_records";
+  public static final String DEFAULT_DEADLETTER_TABLE_SUFFIX = ".error_records";
 
   /** Pubsub message/string coder for pipeline. */
   public static final FailsafeElementCoder<PubsubMessage, String> CODER =
@@ -162,9 +162,12 @@ public class PubSubToBigQuery {
    * command-line.
    */
   public interface Options extends PipelineOptions, JavascriptTextTransformerOptions {
+    @Description("Table spec to write the output to(SimpleString)")
+    String getOutputTableSpecString();
+    void setOutputTableSpecString(String value);
+
     @Description("Table spec to write the output to")
     ValueProvider<String> getOutputTableSpec();
-
     void setOutputTableSpec(ValueProvider<String> value);
 
     @Description("Pub/Sub topic to read the input from")
@@ -195,6 +198,21 @@ public class PubSubToBigQuery {
     void setOutputDeadletterTable(ValueProvider<String> value);
   }
 
+  static class MyDestinationsFunction
+      implements SerializableFunction<ValueInSingleWindow<TableRow>, TableDestination> {
+    private final String tablePrefix;
+
+    MyDestinationsFunction(String tableId) {
+      tablePrefix = tableId + ".TBL_";
+    }
+
+    @Override
+    public TableDestination apply(ValueInSingleWindow<TableRow> input) {
+      String destination = input.getValue().get("TYPE").toString();
+      return new TableDestination(tablePrefix + destination, "Data type " + destination);
+    }
+  }
+
   /**
    * The main entry-point for pipeline execution. This method will start the pipeline but will not
    * wait for it's execution to finish. If blocking execution is required, use the {@link
@@ -208,23 +226,6 @@ public class PubSubToBigQuery {
 
     run(options);
   }
-
-
-  static class MyDestinationsFunction
-      implements SerializableFunction<ValueInSingleWindow<TableRow>, TableDestination> {
-    private final String tablePrefix;
-
-    MyDestinationsFunction(ValueProvider<String> tableId) {
-      tablePrefix = tableId + ".TBL_";
-    }
-
-    @Override
-    public TableDestination apply(ValueInSingleWindow<TableRow> input) {
-      String destination = input.getValue().get("TYPE").toString();
-      return new TableDestination(tablePrefix + destination, "Data type " + destination);
-    }
-  }
-
 
   /**
    * Runs the pipeline to completion with the specified options. This method does not wait until the
@@ -293,7 +294,7 @@ public class PubSubToBigQuery {
                     .withExtendedErrorInfo()
                     .withMethod(BigQueryIO.Write.Method.STREAMING_INSERTS)
                     .withFailedInsertRetryPolicy(InsertRetryPolicy.retryTransientErrors())
-                    .to(new MyDestinationsFunction(options.getOutputTableSpec())) );
+                    .to(new MyDestinationsFunction(options.getOutputTableSpecString())));
 
     /*
      * Step 3 Contd.
@@ -321,10 +322,10 @@ public class PubSubToBigQuery {
             "WriteFailedRecords",
             ErrorConverters.WritePubsubMessageErrors.newBuilder()
                 .setErrorRecordsTable(
-                    ValueProviderUtils.maybeUseDefaultDeadletterTable(
-                        options.getOutputDeadletterTable(),
-                        options.getOutputTableSpec(),
-                        DEFAULT_DEADLETTER_TABLE_SUFFIX))
+                  ValueProviderUtils.maybeUseDefaultDeadletterTable(
+                      options.getOutputDeadletterTable(),
+                      options.getOutputTableSpec(),
+                      DEFAULT_DEADLETTER_TABLE_SUFFIX))
                 .setErrorRecordsTableSchema(ResourceUtils.getDeadletterTableSchemaJson())
                 .build());
 
@@ -333,38 +334,14 @@ public class PubSubToBigQuery {
         "WriteFailedRecords",
         ErrorConverters.WriteStringMessageErrors.newBuilder()
             .setErrorRecordsTable(
-                ValueProviderUtils.maybeUseDefaultDeadletterTable(
-                    options.getOutputDeadletterTable(),
-                    options.getOutputTableSpec(),
-                    DEFAULT_DEADLETTER_TABLE_SUFFIX))
+              ValueProviderUtils.maybeUseDefaultDeadletterTable(
+                  options.getOutputDeadletterTable(),
+                  options.getOutputTableSpec(),
+                  DEFAULT_DEADLETTER_TABLE_SUFFIX))
             .setErrorRecordsTableSchema(ResourceUtils.getDeadletterTableSchemaJson())
             .build());
 
     return pipeline.run();
-  }
-
-  /**
-   * If deadletterTable is available, it is returned as is, otherwise outputTableSpec +
-   * defaultDeadLetterTableSuffix is returned instead.
-   */
-  private static ValueProvider<String> maybeUseDefaultDeadletterTable(
-      ValueProvider<String> deadletterTable,
-      ValueProvider<String> outputTableSpec,
-      String defaultDeadLetterTableSuffix) {
-    return DualInputNestedValueProvider.of(
-        deadletterTable,
-        outputTableSpec,
-        new SerializableFunction<TranslatorInput<String, String>, String>() {
-          @Override
-          public String apply(TranslatorInput<String, String> input) {
-            String userProvidedTable = input.getX();
-            String outputTableSpec = input.getY();
-            if (userProvidedTable == null) {
-              return outputTableSpec + defaultDeadLetterTableSuffix;
-            }
-            return userProvidedTable;
-          }
-        });
   }
 
   /**
